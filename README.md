@@ -1,7 +1,7 @@
 # Imagic Hat (Python Image + Magic Hat)
 <span style="font-size: 5em;">🂡 🂱 🃁 🃑 </span>
 
-**Drop your image(s) onto the magic hat and prestidigitationaly convert, resize, reformat or animate and save the new image!**
+**Drop your image(s) onto the magic hat and prestidigitationally convert, resize, reformat or animate and save the new image!**
 
 ![rabbit popping out of pixel art hat](art/magic_hat_x5.gif)
 
@@ -27,3 +27,10 @@
         - speed
         - is infinite?
     - quality
+
+## Notes
+- Keep program relatively 'flat' as this is Harvard CS50P final project, otherwise would make a couple modules. 
+- Architecture: 
+    - main: GUI and "pieced together" image functions
+    - constants: RAW files types, resample filters, etc.
+    - image_lib: This should contain the function components that make up the image ops.
