@@ -52,8 +52,47 @@ def convert_to_rgb():
 def get_resampling_filter():
     ...
     
-def resize_image():
-    ...
+def resize_image(img, new_size=(-1, -1), resample="LANCZOS"):
+    """
+    Resizes a Pillow Image while intelligently maintaining its original aspect ratio.
+    If the aspect ratio of new_size doesn't match, it clamps to the larger dimension 
+    and scales the other dimension proportionally.
+    """
+    # If no valid size is passed, return the original image untouched
+    if new_size == (-1, -1):
+        return img
+    
+    # Make sure we have a valid resample filter. if not default to Lanczos, it's smooth:)
+    resample_upper = str(resample).upper()
+    if resample_upper not in GUI_RESAMPLE_OPTIONS:
+        print(f"Warning: '{resample}' is not a valid filter. Falling back to LANCZOS.")
+        resample_upper = "LANCZOS"
+
+    og_w, og_h = img.width, img.height
+    new_w, new_h = new_size
+    print(f"Target size requested: Width={new_w}, Height={new_h}")
+    
+    # Calculate aspect ratios
+    og_ratio = og_w / og_h
+    new_ratio = new_w / new_h
+    
+    # Check if the target ratio deviates from the original ratio
+    diff = 0.01
+    if abs(og_ratio - new_ratio) > diff:
+        print(f"Image ratio mismatch! OG: {og_ratio:.2f}, New target: {new_ratio:.2f}")
+        
+        # Do the math to clamp and adjust proportionally
+        if og_ratio > new_ratio:
+            new_h = int(new_w / og_ratio)
+        else:
+            new_w = int(new_h * og_ratio)
+        print(f"Adjusted dimensions to maintain aspect ratio: Width={new_w}, Height={new_h}")
+
+    # Convert the string filter name (like "LANCZOS") into the Pillow enum
+    filter_enum = getattr(Image.Resampling, resample_upper)
+    
+    # Perform the actual resize and return the new image object
+    return img.resize((new_w, new_h), resample=filter_enum)
 
 def verify_input_path(in_file_path):
     """
@@ -82,7 +121,7 @@ def open_image(in_file_path):
         with rawpy.imread(path) as raw: 
             rgb_array = raw.postprocess()
             return Image.fromarray(rgb_array)
-    # Open all other file types as a Pillow IMage
+    # Open all other file types as a Pillow Image
     else:
         print(f"Opening standard/HEIC image via Pillow: {path}")
         img = Image.open(path)

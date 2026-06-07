@@ -43,3 +43,7 @@
 
 ```pip freeze > requirements.txt```
 
+Run tests locally:
+```python -m pytest```
+Otherwise
+```pytest```
