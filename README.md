@@ -29,8 +29,17 @@
     - quality
 
 ## Notes
-- Keep program relatively 'flat' as this is Harvard CS50P final project, otherwise would make a couple modules. 
+- Keep program relatively 'flat' as this is Harvard CS50P final project, otherwise would make a couple packages. 
 - Architecture: 
     - main: GUI and "pieced together" image functions
     - constants: RAW files types, resample filters, etc.
     - image_lib: This should contain the function components that make up the image ops.
+
+## Libraries
+- **Pillow**: Image processing
+- **Pytest**: Unit testing
+- **Rawpy**: Library that decodes raw image formats
+- **Pillow-Heif**: Lets Pillow reid HEIF (iPhone image) files
+
+```pip freeze > requirements.txt```
+

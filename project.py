@@ -1,15 +1,36 @@
 import tkinter as tk
 from tkinter import ttk
 from dataclasses import dataclass
+from image_lib import image_lib_shoutout
+import os
+from pathlib import Path
+from constants import RAW_EXTENSIONS, GUI_RESAMPLE_OPTIONS
+
+from PIL import Image
+import rawpy
+from pillow_heif import register_heif_opener
+
+
+# Register the HEIF opener with Pillow
+register_heif_opener()
 
 def main():
-    print("IMAGIC HAT")
+    print("IMAGIC HAT 📸")
+    image_lib_shoutout()
     app = GUI()
     app.mainloop()
     
+    
 # Main Functionality of app
 def save_for_web():
-    print('saved :)')
+    """
+    Save and Optimize for Web
+    Takes in an ImagicImage object?
+    - file
+    
+    """
+    
+    
     ...
     
 def make_gif_animation():
@@ -34,8 +55,39 @@ def get_resampling_filter():
 def resize_image():
     ...
 
-def open_image():
-    ...
+def verify_input_path(in_file_path):
+    """
+    Converts a string path into a pathlib.Path object and verifies it exists.
+    Raises FileNotFoundError if it doesn't.
+    """
+    path = Path(in_file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"File not found: {path.resolve()}")
+    return path
+
+    
+def open_image(in_file_path):
+    '''
+    A function for opening ANY format image file, so that the our code can work with it.
+    Works with jpg, png, gif, TIFF, webp, RAW files (via rawpy) and HEIF (iPhone format)
+    returns a Pillow image
+    '''
+    path = verify_input_path(in_file_path)
+    file_extension = path.suffix.lower()
+    
+    # Use Rawpy library to open the raw image as a Pillow Image
+    # We check the extension and compare it to our list of raw files in constants.py
+    if file_extension in RAW_EXTENSIONS:
+        print(f"Processing RAW file: {path}")
+        with rawpy.imread(path) as raw: 
+            rgb_array = raw.postprocess()
+            return Image.fromarray(rgb_array)
+    # Open all other file types as a Pillow IMage
+    else:
+        print(f"Opening standard/HEIC image via Pillow: {path}")
+        img = Image.open(path)
+        img.load() 
+        return img
     
 def save_image():
     ...
@@ -50,6 +102,10 @@ class ImageSettings():
     
 @dataclass
 class ImageSpecs():
+    ...
+    
+@dataclass
+class ImagicImage():
     ...
 
 
