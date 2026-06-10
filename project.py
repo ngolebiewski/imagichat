@@ -1,6 +1,6 @@
 # Python Built-ins
 import tkinter as tk
-from tkinter import ttk, filedialog
+from tkinter import ttk, filedialog, messagebox
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,9 +22,6 @@ register_heif_opener()
 def main():
     print("IMAGIC HAT 📸")
     image_lib_shoutout()
-    app = GUI()
-    app.mainloop()
-    
     
 # Main Functionality of app
 
@@ -189,11 +186,11 @@ def rotate_or_flip(img, deg):
     match deg:
         
         case "90":
-            return img.transpose(Image.ROTATE90)
+            return img.transpose(Image.ROTATE_90)
         case "180":
-            return img.transpose(Image.ROTATE180)
+            return img.transpose(Image.ROTATE_180)
         case "270":
-            return img.transpose(Image.ROTATE270)
+            return img.transpose(Image.ROTATE_270)
         case "FLIP_LEFT_RIGHT":
             return img.transpose(Image.FLIP_LEFT_RIGHT)
         case "FLIP_TOP_BOTTOM":
@@ -205,35 +202,19 @@ def rotate_or_flip(img, deg):
 # Settings, config and specs for images
 @dataclass
 class ImageSettings():
-    """
-    5. Settings -> A few defaults / Save your defaults / adjust...
-    - size
-    - crop
-    - ratio
-    - format (defaults to same)
-    - keep transparency? 
-        - set background color
-    - animation?
-        - speed
-        - is infinite?
-    - quality
-    """
-    
-   
-    width: int
-    height: int
-    ratio: float
-    filetype: str
-    rotate: str #can be 90,180,270, FLIP_LEFT_RIGHT, FLIP_TOP_DOWN # make as an enum?
+    """ Holds the live image settings matching the user's GUI choices/CLI prompts """
+    width: int = -1
+    height: int = -1
+    ratio: float = 1.0
+    filetype: str = "JPG"
     isTransparent: bool = False
     isAnimation: bool = False
     animation_speed: int = 4
+    rotate: int | str = "0"  # Can be 0, 90, 180, 270, FLIP_LEFT_RIGHT, FLIP_TOP_BOTTOM
     isInfinite: bool = True
     preset: str = ""
-    quality: int = 12
+    quality: int = 12       # Scaled 1 to 12
     progressive: bool = True
-    
-    
     
     
     
@@ -290,173 +271,8 @@ class ImagicImage():
 #             self.image_label.config(image=self.image_empty)
 
       
-class GUI(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        
-        self.title("Imagic Hat 📸")
-        self.geometry("1200x650")
-        
-        # State Tracking Variables
-        self.current_src_path = None
-        self.original_pil_img = None
-        self.processed_pil_img = None
-        
-        # Configure Grid Layout (3 Columns)
-        self.columnconfigure(0, weight=1, minsize=280) # Left Column
-        self.columnconfigure(1, weight=2, minsize=450) # Middle Column
-        self.columnconfigure(2, weight=2, minsize=450) # Right Column
-        self.rowconfigure(0, weight=1)
 
-        # ----------------------------------------------------
-        # COLUMN 1: LEFT SIDE (3 Vertical Sub-sections)
-        # ----------------------------------------------------
-        self.left_col = ttk.Frame(self, padding=10)
-        self.left_col.grid(row=0, column=0, sticky="nsew")
-        
-        # --- SECTION 1: File Picker ---
-        sec_file = ttk.LabelFrame(self.left_col, text=" 1. File Section ", padding=10)
-        sec_file.pack(fill="x", pady=(0, 10))
-        
-        # This now points to the fixed filedialog module
-        self.btn_browse = ttk.Button(sec_file, text="Load Image File", command=self.load_image_action)
-        self.btn_browse.pack(fill="x", pady=5)
-        
-        self.lbl_file_name = ttk.Label(sec_file, text="No file loaded", font=("Arial", 9, "italic"), wraplength=240)
-        self.lbl_file_name.pack(fill="x")
-
-        # --- SECTION 2: Magic Hat Visual Status ---
-        sec_hat = ttk.LabelFrame(self.left_col, text=" 2. Magic Hat Status ", padding=10)
-        sec_hat.pack(fill="x", pady=(0, 10))
-        
-        # Load your actual graphics assets safely using Pillow
-        try:
-            self.img_empty_hat = ImageTk.PhotoImage(Image.open("art/magic_hat_emptyx5.gif").resize((120, 120)))
-            self.img_rabbit_hat = ImageTk.PhotoImage(Image.open("art/magic_hat_x5.gif").resize((120, 120)))
-        except Exception:
-            print("Warning: Art assets missing. Using text placeholders.")
-            self.img_empty_hat = None
-            self.img_rabbit_hat = None
-
-        # Display the starting empty hat graphic
-        self.hat_visual_label = ttk.Label(sec_hat, image=self.img_empty_hat, text="🎩 Hat is Empty...", compound="top", font=("Arial", 10, "bold"))
-        self.hat_visual_label.pack(pady=5)
-
-        # --- SECTION 3: Image Settings Panel ---
-        sec_settings = ttk.LabelFrame(self.left_col, text=" 3. Image Settings ", padding=10)
-        sec_settings.pack(fill="both", expand=True)
-        
-        ttk.Label(sec_settings, text="Rotation Matrix:").pack(anchor="w", pady=(5, 2))
-        self.rotate_var = tk.StringVar(value="0")
-        rotation_options = ["0", "90", "180", "270", "FLIP_LEFT_RIGHT", "FLIP_TOP_BOTTOM"]
-        self.dropdown_rotate = ttk.Combobox(sec_settings, textvariable=self.rotate_var, values=rotation_options, state="readonly")
-        self.dropdown_rotate.pack(fill="x", pady=(0, 15))
-        self.dropdown_rotate.bind("<<ComboboxSelected>>", self.apply_transformations)
-        
-        # Revert Button: Instantly resets settings back to original source state
-        self.btn_revert = ttk.Button(sec_settings, text="🔄 Reset Settings", state="disabled", command=self.revert_settings_action)
-        self.btn_revert.pack(fill="x", side="bottom", pady=5)
-
-        # ----------------------------------------------------
-        # COLUMN 2: MIDDLE (Original Source Frame)
-        # ----------------------------------------------------
-        self.mid_col = ttk.LabelFrame(self, text=" Original Source View ", padding=10)
-        self.mid_col.grid(row=0, column=1, sticky="nsew", padx=5, pady=10)
-        
-        self.lbl_orig_view = ttk.Label(self.mid_col, text="Awaiting File Input...", anchor="center")
-        self.lbl_orig_view.pack(expand=True, fill="both")
-
-        # ----------------------------------------------------
-        # COLUMN 3: RIGHT (Preview Output Panel & Save Actions)
-        # ----------------------------------------------------
-        self.right_col = ttk.LabelFrame(self, text=" Live Output Preview ", padding=10)
-        self.right_col.grid(row=0, column=2, sticky="nsew", padx=5, pady=10)
-        
-        self.lbl_prev_view = ttk.Label(self.right_col, text="No modifications yet", anchor="center")
-        self.lbl_prev_view.pack(expand=True, fill="both")
-        
-        # Save Optimized Button
-        self.btn_save = ttk.Button(self.right_col, text="💾 Save Optimized Image", state="disabled", command=self.save_action)
-        self.btn_save.pack(fill="x", pady=5)
-
-    # ----------------------------------------------------
-    # CORE CONTROLLER LOGIC
-    # ----------------------------------------------------
-    def load_image_action(self):
-        # Pops up the interactive OS file window
-        file_path = filedialog.askopenfilename(
-            filetypes=[("All Image Files", "*.jpg *.jpeg *.png *.heic *.gif *.tiff"), ("All Files", "*.*")]
-        )
-        if not file_path:
-            return
-
-        try:
-            # 1. Open file using your back-end open_image logic
-            self.original_pil_img = open_image(file_path)
-            self.current_src_path = file_path
-            self.lbl_file_name.config(text=Path(file_path).name)
-
-            # 2. Swap to the rabbit visual graphic asset
-            if self.img_rabbit_hat:
-                self.hat_visual_label.config(image=self.img_rabbit_hat, text="✨ 🐇 Ta-da! Rabbit Out!")
-
-            # 3. Fit original image into the center view column container
-            scaled_orig = resize_image(self.original_pil_img, (400, 400))
-            self.tk_orig_reference = ImageTk.PhotoImage(scaled_orig)
-            self.lbl_orig_view.config(image=self.tk_orig_reference, text="")
-
-            # 4. Turn on UI interactions
-            self.btn_save.config(state="normal")
-            self.btn_revert.config(state="normal")
-
-            # 5. Process downstream pipeline
-            self.apply_transformations()
-
-        except Exception as e:
-            self.lbl_file_name.config(text=f"❌ Error Loading: {str(e)}")
-
-    def apply_transformations(self, event=None):
-        if not self.original_pil_img:
-            return
-
-        # Read rotation widget setup value
-        angle_selection = self.rotate_var.get()
-        if angle_selection.isdigit():
-            angle_selection = int(angle_selection)
-
-        # Process image changes using your backend rotate_or_flip logic
-        self.processed_pil_img = rotate_or_flip(self.original_pil_img, angle_selection)
-
-        # Downscale copy frame cleanly to fit column 3 box frame
-        scaled_preview = resize_image(self.processed_pil_img, (400, 400))
-        self.tk_preview_reference = ImageTk.PhotoImage(scaled_preview)
-        self.lbl_prev_view.config(image=self.tk_preview_reference, text="")
-
-    def revert_settings_action(self):
-        """ Resets widgets and drops values back to matching original state """
-        if not self.original_pil_img:
-            return
-        
-        # Set dropdown pointer configuration state back to 0
-        self.rotate_var.set("0")
-        
-        # Re-trigger pipeline to update preview canvas automatically
-        self.apply_transformations()
-        print("Settings restored to factory defaults.")
-
-    def save_action(self):
-        if not self.processed_pil_img:
-            return
             
-        # File selector window preset for writing file path data back to disk storage
-        out_file = filedialog.asksaveasfilename(
-            defaultextension=".jpg", 
-            filetypes=[("JPEG Image", "*.jpg"), ("PNG Image", "*.png"), ("All Files", "*.*")]
-        )
-        if out_file:
-            self.processed_pil_img.save(out_file)
-            print(f"File successfully committed to storage path: {out_file}")
-
 if __name__ == "__main__":
     main()
 
