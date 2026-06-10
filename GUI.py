@@ -29,17 +29,17 @@ class GUI(tk.Tk):
         
         self.title("Imagic Hat 📸")
         self.state("zoomed") 
-        self.geometry("1200x700")
+        self.geometry("1200x850")
         
         # State Data & Dataclass Initialization
         self.current_src_path = None
         self.original_pil_img = None
         
-        # Viewport Caches
+        # Viewport Caches (Detached RAM copies for rendering)
         self.orig_view_thumb = None     
         self.preview_view_thumb = None  
         
-        # Geometry tracking to kill the infinite resize feedback loop
+        # Geometry tracking to prevent infinite resize loop cascades
         self.last_orig_width = 0
         self.last_orig_height = 0
         
@@ -69,7 +69,7 @@ class GUI(tk.Tk):
         self.lbl_file_name = ttk.Label(sec_file, text="No file loaded", font=("Arial", 9, "italic"), wraplength=260)
         self.lbl_file_name.pack(fill="x")
 
-        # Sub-Section B: Magic Hat Status Box Asset Box
+        # Sub-Section B: Magic Hat Status Box
         sec_hat = ttk.LabelFrame(self.left_col, text=" 2. Magic Hat Status ", padding=10)
         sec_hat.pack(fill="x", pady=(0, 10))
         
@@ -93,7 +93,7 @@ class GUI(tk.Tk):
         rotation_options = ["0", "90", "180", "270", "FLIP_LEFT_RIGHT", "FLIP_TOP_BOTTOM"]
         self.dropdown_rotate = ttk.Combobox(sec_settings, textvariable=self.rotate_var, values=rotation_options, state="readonly")
         self.dropdown_rotate.pack(fill="x", pady=(0, 10))
-        self.dropdown_rotate.bind("<<ComboboxSelected>>", lambda e: self.apply_fast_preview_transform())
+        self.dropdown_rotate.bind("<<ComboboxSelected>>", lambda e: self.handle_rotation_change())
         
         # Resize Output Scale Rules Matrix
         self.sec_resize = ttk.LabelFrame(sec_settings, text=" Custom Scaling Overrides ", padding=8)
@@ -123,7 +123,7 @@ class GUI(tk.Tk):
         self.entry_height.bind("<FocusOut>", lambda e: self.handle_dimension_input("height"))
         self.entry_height.bind("<Return>", lambda e: self.handle_dimension_input("height"))
 
-        # Export Format Selection Combobox
+        # Export Format Selection Combobox (On-Demand sync)
         ttk.Label(sec_settings, text="Export Format:").pack(anchor="w", pady=(5, 2))
         self.format_var = tk.StringVar(value="JPEG")
         format_options = ["TIFF", "PNG", "JPEG", "WEBP", "GIF"]
@@ -131,7 +131,7 @@ class GUI(tk.Tk):
         self.dropdown_format.pack(fill="x", pady=(0, 10))
         self.dropdown_format.bind("<<ComboboxSelected>>", lambda e: self.sync_gui_to_dataclass())
         
-        # Compression/Quality Parameter Slider Range Scale (1 to 12)
+        # Compression/Quality Parameter Slider Range Scale (On-Demand sync)
         ttk.Label(sec_settings, text="Quality Level (1-12):").pack(anchor="w")
         self.quality_var = tk.IntVar(value=12)
         self.lbl_quality_val = ttk.Label(sec_settings, text="12")
@@ -139,6 +139,10 @@ class GUI(tk.Tk):
         
         self.slider_quality = ttk.Scale(sec_settings, from_=1, to=12, variable=self.quality_var, orient="horizontal", command=self.update_quality_slider)
         self.slider_quality.pack(fill="x", pady=(0, 15))
+        
+        # Dedicated Manual Refresh Preview Button
+        self.btn_refresh = ttk.Button(sec_settings, text="🔄 Refresh Preview Window", state="disabled", command=self.apply_fast_preview_transform)
+        self.btn_refresh.pack(fill="x", pady=(5, 15))
         
         # Bottom Utility Buttons Container Frame Layout
         btn_container = ttk.Frame(sec_settings)
@@ -162,7 +166,7 @@ class GUI(tk.Tk):
         self.mid_col.columnconfigure(0, weight=1)
         self.mid_col.rowconfigure(0, weight=1)
         
-        # Bind resize tracking to the actual outer column frame container
+        # Track resizes on the middle column container frame
         self.mid_col.bind("<Configure>", self.handle_window_resize_event)
 
         # ----------------------------------------------------
@@ -181,7 +185,7 @@ class GUI(tk.Tk):
         self.btn_save.grid(row=1, column=0, sticky="ew", pady=(5, 0))
 
     # ----------------------------------------------------
-    # OPERATIONAL CONTROLLERS
+    # OPERATIONAL CONTROLLERS & DATA SYNCHRONIZATION
     # ----------------------------------------------------
     def update_quality_slider(self, event=None):
         val = int(float(self.quality_var.get()))
@@ -199,6 +203,10 @@ class GUI(tk.Tk):
             self.settings.height = int(self.height_var.get())
         except ValueError:
             pass
+
+    def handle_rotation_change(self):
+        self.sync_gui_to_dataclass()
+        self.apply_fast_preview_transform()
 
     def handle_dimension_input(self, changed_dimension):
         if not self.original_pil_img or self._updating_dimensions:
@@ -223,9 +231,8 @@ class GUI(tk.Tk):
                 
         self._updating_dimensions = False
         self.sync_gui_to_dataclass()
-        self.apply_fast_preview_transform()
 
-    # --- LOADING ARTIFACT ENGINE ---
+    # --- ASYNCHRONOUS LOAD PIPELINE ---
     def load_image_action(self):
         self.lbl_file_name.config(text="⌛ Opening File Browser...")
         file_path = filedialog.askopenfilename(
@@ -240,7 +247,7 @@ class GUI(tk.Tk):
     def _async_load_worker(self, file_path):
         try:
             loaded_img = open_image(file_path)
-            loaded_img.load()  # Read full array out safely into RAM
+            loaded_img.load()  # Read full array into RAM immediately
             src_path = Path(file_path)
             self.after(0, self._async_load_callback, loaded_img, src_path)
         except Exception as e:
@@ -260,29 +267,34 @@ class GUI(tk.Tk):
         self.btn_save.config(state="normal")
         self.btn_revert.config(state="normal")
         self.btn_close.config(state="normal")
+        self.btn_refresh.config(state="normal")
         
-        # Zero out size memories to force immediate initial cache building
+        # Reset geometry locks to guarantee layout generation
         self.last_orig_width = 0
         self.last_orig_height = 0
         
         self.generate_viewport_caches()
 
-    # --- DOCKING RECONCILIATION SWITCHBOARD (THE RESIZE BREAKOUT) ---
+    # ----------------------------------------------------
+    # GEOMETRY RECONCILIATION & DEBOUNCED RENDER PIPELINE
+    # ----------------------------------------------------
     def handle_window_resize_event(self, event):
         if not self.original_pil_img:
             return
             
-        # Check if the panel size change is meaningful (> 4px deviation)
-        # This blocks cascading internal rendering events from locking your app
-        if abs(event.width - self.last_orig_width) < 4 and abs(event.height - self.last_orig_height) < 4:
+        # Ignore layout recalculation if change is less than 5px
+        if abs(event.width - self.last_orig_width) < 5 and abs(event.height - self.last_orig_height) < 5:
             return
             
         self.last_orig_width = event.width
         self.last_orig_height = event.height
         
+        # Debounce: Cancel pending timer if user is actively dragging window frame
         if self._resize_timer_id:
             self.after_cancel(self._resize_timer_id)
-        self._resize_timer_id = self.after(300, self.generate_viewport_caches)
+            
+        # Execute render 250ms after sizing settles
+        self._resize_timer_id = self.after(250, self.generate_viewport_caches)
 
     def generate_viewport_caches(self):
         if not self.original_pil_img:
@@ -290,13 +302,11 @@ class GUI(tk.Tk):
         threading.Thread(target=self._build_cache_worker, daemon=True).start()
 
     def _build_cache_worker(self):
-        # Read true sizing safely from structural components
         m_w = max(self.mid_col.winfo_width() - 20, 100)
         m_h = max(self.mid_col.winfo_height() - 40, 100)
         r_w = max(self.right_col.winfo_width() - 20, 100)
         r_h = max(self.right_col.winfo_height() - 40, 100)
         
-        # Core operations run completely isolated away from your UI thread
         t1 = resize_image(self.original_pil_img, (m_w, m_h))
         t2 = resize_image(self.original_pil_img, (r_w, r_h))
         
@@ -310,27 +320,29 @@ class GUI(tk.Tk):
             return
         self.tk_orig_reference = ImageTk.PhotoImage(self.orig_view_thumb)
         self.lbl_orig_view.config(image=self.tk_orig_reference, text="")
+        
+        # Auto-update previews on a resize layout shift
         self.sync_gui_to_dataclass()
         self.apply_fast_preview_transform()
 
-    # --- INSTANT LIGHTWEIGHT RUNTIME TRANSITIONS ---
+    # --- ULTRA-FAST LIGHTWEIGHT TRANSFORMATION ENGINE ---
     def apply_fast_preview_transform(self):
-            if not self.preview_view_thumb:
-                return
-                
-            current_rotation = self.rotate_var.get()
+        if not self.preview_view_thumb:
+            return
             
-            # ELIMINATE THE SLOWDOWN: If rotation is 0, don't calculate or allocate anything new
-            if current_rotation == "0":
-                self.tk_preview_reference = ImageTk.PhotoImage(self.preview_view_thumb)
-                self.lbl_prev_view.config(image=self.tk_preview_reference, text="")
-                return
-
-            # Only process actual transpositions if the value isn't 0
-            processed_preview = rotate_or_flip(self.preview_view_thumb, current_rotation)
-            self.tk_preview_reference = ImageTk.PhotoImage(processed_preview)
+        current_rotation = self.rotate_var.get()
+        
+        # CRITICAL RE-ALLOCATION BYPASS: Point straight to cache reference if 0 degrees
+        if current_rotation == "0":
+            self.tk_preview_reference = ImageTk.PhotoImage(self.preview_view_thumb)
             self.lbl_prev_view.config(image=self.tk_preview_reference, text="")
+            return
 
+        processed_preview = rotate_or_flip(self.preview_view_thumb, current_rotation)
+        self.tk_preview_reference = ImageTk.PhotoImage(processed_preview)
+        self.lbl_prev_view.config(image=self.tk_preview_reference, text="")
+
+    # --- UTILITIES ---
     def revert_settings_action(self):
         if not self.original_pil_img:
             return
@@ -367,11 +379,12 @@ class GUI(tk.Tk):
         self.btn_save.config(state="disabled")
         self.btn_revert.config(state="disabled")
         self.btn_close.config(state="disabled")
+        self.btn_refresh.config(state="disabled")
         
         if self.img_empty_hat:
             self.hat_visual_label.config(image=self.img_empty_hat, text="🎩 Hat is Empty...")
 
-    # --- HIGH-QUALITY SAVE COMPILATION WORKER ---
+    # --- COMPILATION & DISK EXPORT PIPELINE ---
     def save_action(self):
         if not self.original_pil_img or not self.current_src_path:
             return
@@ -395,6 +408,7 @@ class GUI(tk.Tk):
         pillow_quality = int((self.settings.quality / 12) * 100)
         self.btn_save.config(state="disabled")
         
+        # Heavy processes isolated completely to save operations
         threading.Thread(
             target=self._async_save_worker, 
             args=(out_path, pillow_quality), 
@@ -403,25 +417,136 @@ class GUI(tk.Tk):
 
     def _async_save_worker(self, out_path, pillow_quality):
         try:
-            # Process high-quality master transposition on the background thread
+            # 1. Always start fresh from the original full-color master
             master_img = rotate_or_flip(self.original_pil_img, self.settings.rotate)
             
             try:
                 target_w = int(self.width_var.get())
                 target_h = int(self.height_var.get())
-                if target_w != self.original_pil_img.width or target_h != self.original_pil_img.height:
+                
+                master_ratio = master_img.width / master_img.height
+                target_ratio = target_w / target_h
+                
+                if (master_ratio > 1 and target_ratio < 1) or (master_ratio < 1 and target_ratio > 1):
+                    target_w, target_h = target_h, target_w
+                
+                if target_w != master_img.width or target_h != master_img.height:
                     master_img = master_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
             except ValueError:
                 pass
 
-            if self.settings.filetype in ["JPEG", "WEBP"]:
-                master_img.save(out_path, format=self.settings.filetype, quality=pillow_quality)
+            # 2. Normalize format strings cleanly
+            save_format = self.settings.filetype.upper()
+            if save_format == "JPG":
+                save_format = "JPEG"
+
+            # 3. Create a local copy for format-specific color mutations
+            export_img = master_img.copy()
+
+            # 4. Handle specific format color rules safely
+            if save_format == "GIF":
+                export_img = export_img.convert("P", palette=Image.Palette.ADAPTIVE)
+            elif save_format in ["JPEG", "JPG"] and export_img.mode in ["P", "RGBA"]:
+                # If it somehow got stuck in Palette or transparent mode, force it back to standard RGB for JPEG
+                export_img = export_img.convert("RGB")
+
+            # 5. Write to disk using the safely isolated copy
+            if save_format in ["JPEG", "WEBP"]:
+                export_img.save(out_path, format=save_format, quality=pillow_quality)
             else:
-                master_img.save(out_path, format=self.settings.filetype)
+                export_img.save(out_path, format=save_format)
                 
             self.after(0, self._async_save_callback, True, out_path, None)
         except Exception as e:
             self.after(0, self._async_save_callback, False, out_path, str(e))
+        try:
+            master_img = rotate_or_flip(self.original_pil_img, self.settings.rotate)
+            
+            try:
+                target_w = int(self.width_var.get())
+                target_h = int(self.height_var.get())
+                
+                master_ratio = master_img.width / master_img.height
+                target_ratio = target_w / target_h
+                
+                if (master_ratio > 1 and target_ratio < 1) or (master_ratio < 1 and target_ratio > 1):
+                    target_w, target_h = target_h, target_w
+                
+                if target_w != master_img.width or target_h != master_img.height:
+                    master_img = master_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            except ValueError:
+                pass
+
+            save_format = self.settings.filetype.upper()
+            if save_format == "JPG":
+                save_format = "JPEG"
+
+            # FIX THE GIF SAVE BUG: Convert full-color RGB to a 256-color palette
+            if save_format == "GIF":
+                # Convert to palette mode using an adaptive, high-quality dithering palette
+                master_img = master_img.convert("P", palette=Image.Palette.ADAPTIVE)
+
+            if save_format in ["JPEG", "WEBP"]:
+                master_img.save(out_path, format=save_format, quality=pillow_quality)
+            else:
+                master_img.save(out_path, format=save_format)
+                
+            self.after(0, self._async_save_callback, True, out_path, None)
+        except Exception as e:
+            self.after(0, self._async_save_callback, False, out_path, str(e))
+            try:
+                # 1. Apply rotation first to get the correct orientation matrix
+                master_img = rotate_or_flip(self.original_pil_img, self.settings.rotate)
+                
+                try:
+                    # 2. Parse the desired output dimensions from the entry boxes
+                    target_w = int(self.width_var.get())
+                    target_h = int(self.height_var.get())
+                    
+                    # 3. FIX THE WARPING: Check if the current orientation aspect ratio 
+                    # matches the text fields. If it flipped, swap them to prevent squashing.
+                    master_ratio = master_img.width / master_img.height
+                    target_ratio = target_w / target_h
+                    
+                    # If one is landscape and the other is portrait, flip the target constraints
+                    if (master_ratio > 1 and target_ratio < 1) or (master_ratio < 1 and target_ratio > 1):
+                        target_w, target_h = target_h, target_w
+                    
+                    # Only execute resize if the dimensions are actually different from current master state
+                    if target_w != master_img.width or target_h != master_img.height:
+                        master_img = master_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                except ValueError:
+                    # If text fields are empty or invalid, skip custom scaling and keep original size
+                    pass
+
+                # 4. Save to disk cleanly
+                if self.settings.filetype in ["JPEG", "WEBP"]:
+                    master_img.save(out_path, format=self.settings.filetype, quality=pillow_quality)
+                else:
+                    master_img.save(out_path, format=self.settings.filetype)
+                    
+                self.after(0, self._async_save_callback, True, out_path, None)
+            except Exception as e:
+                self.after(0, self._async_save_callback, False, out_path, str(e))
+            try:
+                master_img = rotate_or_flip(self.original_pil_img, self.settings.rotate)
+                
+                try:
+                    target_w = int(self.width_var.get())
+                    target_h = int(self.height_var.get())
+                    if target_w != self.original_pil_img.width or target_h != self.original_pil_img.height:
+                        master_img = master_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+                except ValueError:
+                    pass
+
+                if self.settings.filetype in ["JPEG", "WEBP"]:
+                    master_img.save(out_path, format=self.settings.filetype, quality=pillow_quality)
+                else:
+                    master_img.save(out_path, format=self.settings.filetype)
+                    
+                self.after(0, self._async_save_callback, True, out_path, None)
+            except Exception as e:
+                self.after(0, self._async_save_callback, False, out_path, str(e))
 
     def _async_save_callback(self, success, out_path, error_msg):
         if success:
