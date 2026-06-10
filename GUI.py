@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 from dataclasses import dataclass
 from pathlib import Path
+import threading    
 
 # Project Packages
 from constants import RAW_EXTENSIONS, GUI_RESAMPLE_OPTIONS
@@ -20,8 +21,7 @@ def main():
     image_lib_shoutout()
     app = GUI()
     app.mainloop()
-    
-    
+
 
 class GUI(tk.Tk):
     def __init__(self):
@@ -34,11 +34,21 @@ class GUI(tk.Tk):
         # State Data & Dataclass Initialization
         self.current_src_path = None
         self.original_pil_img = None
-        self.processed_pil_img = None
-        self.settings = ImageSettings() # Live dataclass instance
+        
+        # Viewport Caches
+        self.orig_view_thumb = None     
+        self.preview_view_thumb = None  
+        
+        # Geometry tracking to kill the infinite resize feedback loop
+        self.last_orig_width = 0
+        self.last_orig_height = 0
+        
+        self.settings = ImageSettings()
+        self._resize_timer_id = None  
+        self._updating_dimensions = False 
         
         # Layout weights (3 Column Architecture Grid)
-        self.columnconfigure(0, weight=1, minsize=300)
+        self.columnconfigure(0, weight=1, minsize=320)
         self.columnconfigure(1, weight=3, minsize=400)
         self.columnconfigure(2, weight=3, minsize=400)
         self.rowconfigure(0, weight=1)
@@ -82,15 +92,43 @@ class GUI(tk.Tk):
         self.rotate_var = tk.StringVar(value="0")
         rotation_options = ["0", "90", "180", "270", "FLIP_LEFT_RIGHT", "FLIP_TOP_BOTTOM"]
         self.dropdown_rotate = ttk.Combobox(sec_settings, textvariable=self.rotate_var, values=rotation_options, state="readonly")
-        self.dropdown_rotate.pack(fill="x", pady=(0, 15))
-        self.dropdown_rotate.bind("<<ComboboxSelected>>", lambda e: self.sync_gui_to_dataclass())
+        self.dropdown_rotate.pack(fill="x", pady=(0, 10))
+        self.dropdown_rotate.bind("<<ComboboxSelected>>", lambda e: self.apply_fast_preview_transform())
         
+        # Resize Output Scale Rules Matrix
+        self.sec_resize = ttk.LabelFrame(sec_settings, text=" Custom Scaling Overrides ", padding=8)
+        self.sec_resize.pack(fill="x", pady=(0, 10))
+        
+        # Lock Aspect Ratio Constraint Flag
+        self.lock_ratio_var = tk.BooleanVar(value=True)
+        self.chk_lock = ttk.Checkbutton(self.sec_resize, text="Lock Aspect Scale Proportions", variable=self.lock_ratio_var)
+        self.chk_lock.pack(anchor="w", pady=(0, 5))
+        
+        # Width Dimension Input Block
+        dim_frame = ttk.Frame(self.sec_resize)
+        dim_frame.pack(fill="x")
+        
+        ttk.Label(dim_frame, text="Width (px):").pack(side="left")
+        self.width_var = tk.StringVar()
+        self.entry_width = ttk.Entry(dim_frame, textvariable=self.width_var, width=8)
+        self.entry_width.pack(side="left", padx=(5, 15))
+        self.entry_width.bind("<FocusOut>", lambda e: self.handle_dimension_input("width"))
+        self.entry_width.bind("<Return>", lambda e: self.handle_dimension_input("width"))
+        
+        # Height Dimension Input Block
+        ttk.Label(dim_frame, text="Height (px):").pack(side="left")
+        self.height_var = tk.StringVar()
+        self.entry_height = ttk.Entry(dim_frame, textvariable=self.height_var, width=8)
+        self.entry_height.pack(side="left", padx=5)
+        self.entry_height.bind("<FocusOut>", lambda e: self.handle_dimension_input("height"))
+        self.entry_height.bind("<Return>", lambda e: self.handle_dimension_input("height"))
+
         # Export Format Selection Combobox
         ttk.Label(sec_settings, text="Export Format:").pack(anchor="w", pady=(5, 2))
         self.format_var = tk.StringVar(value="JPEG")
         format_options = ["TIFF", "PNG", "JPEG", "WEBP", "GIF"]
         self.dropdown_format = ttk.Combobox(sec_settings, textvariable=self.format_var, values=format_options, state="readonly")
-        self.dropdown_format.pack(fill="x", pady=(0, 15))
+        self.dropdown_format.pack(fill="x", pady=(0, 10))
         self.dropdown_format.bind("<<ComboboxSelected>>", lambda e: self.sync_gui_to_dataclass())
         
         # Compression/Quality Parameter Slider Range Scale (1 to 12)
@@ -113,163 +151,237 @@ class GUI(tk.Tk):
         self.btn_close.pack(fill="x", pady=2)
 
         # ----------------------------------------------------
-        # COLUMN 2: MIDDLE (Dynamic Original Canvas View Frame)
+        # COLUMN 2: MIDDLE (Original Source View Frame)
         # ----------------------------------------------------
         self.mid_col = ttk.LabelFrame(self, text=" Original Source View ", padding=10)
         self.mid_col.grid(row=0, column=1, sticky="nsew", padx=5, pady=10)
+        self.mid_col.grid_propagate(False) 
         
         self.lbl_orig_view = ttk.Label(self.mid_col, text="Awaiting File Input...", anchor="center")
-        self.lbl_orig_view.pack(expand=True, fill="both")
+        self.lbl_orig_view.grid(row=0, column=0, sticky="nsew")
+        self.mid_col.columnconfigure(0, weight=1)
+        self.mid_col.rowconfigure(0, weight=1)
         
-        # Listen for window resizing properties to expand image matrix automatically
-        self.lbl_orig_view.bind("<Configure>", lambda e: self.display_images())
+        # Bind resize tracking to the actual outer column frame container
+        self.mid_col.bind("<Configure>", self.handle_window_resize_event)
 
         # ----------------------------------------------------
-        # COLUMN 3: RIGHT (Dynamic Preview Frame & Saving Actions)
+        # COLUMN 3: RIGHT (Live Output Preview)
         # ----------------------------------------------------
         self.right_col = ttk.LabelFrame(self, text=" Live Output Preview ", padding=10)
         self.right_col.grid(row=0, column=2, sticky="nsew", padx=5, pady=10)
+        self.right_col.grid_propagate(False)
         
         self.lbl_prev_view = ttk.Label(self.right_col, text="No modifications yet", anchor="center")
-        self.lbl_prev_view.pack(expand=True, fill="both")
+        self.lbl_prev_view.grid(row=0, column=0, sticky="nsew")
+        self.right_col.columnconfigure(0, weight=1)
+        self.right_col.rowconfigure(0, weight=1)
         
-        # File Save Commitment Trigger Button Component
         self.btn_save = ttk.Button(self.right_col, text="💾 Save Optimized Image", state="disabled", command=self.save_action)
-        self.btn_save.pack(fill="x", pady=5)
+        self.btn_save.grid(row=1, column=0, sticky="ew", pady=(5, 0))
 
     # ----------------------------------------------------
-    # APPLICATION OPERATIONAL CONTROLLER AND STATE LOGIC
+    # OPERATIONAL CONTROLLERS
     # ----------------------------------------------------
     def update_quality_slider(self, event=None):
-        """ Snaps slider steps to perfect integers and synchronizes workspace state """
         val = int(float(self.quality_var.get()))
         self.quality_var.set(val)
         self.lbl_quality_val.config(text=str(val))
         self.sync_gui_to_dataclass()
 
     def sync_gui_to_dataclass(self):
-        """ Reads all UI input widgets and saves parameters inside the ImageSettings dataclass tracking frame """
         self.settings.rotate = self.rotate_var.get()
         self.settings.filetype = self.format_var.get()
         self.settings.quality = self.quality_var.get()
         
-        # Re-trigger processing calculation flow immediately using newly updated variables
-        self.apply_transformations()
+        try:
+            self.settings.width = int(self.width_var.get())
+            self.settings.height = int(self.height_var.get())
+        except ValueError:
+            pass
 
+    def handle_dimension_input(self, changed_dimension):
+        if not self.original_pil_img or self._updating_dimensions:
+            return
+            
+        try:
+            w_val = int(self.width_var.get())
+            h_val = int(self.height_var.get())
+        except ValueError:
+            return  
+
+        self._updating_dimensions = True
+        native_ratio = self.original_pil_img.width / self.original_pil_img.height
+        
+        if self.lock_ratio_var.get():
+            if changed_dimension == "width":
+                h_val = max(1, int(w_val / native_ratio))
+                self.height_var.set(str(h_val))
+            else:
+                w_val = max(1, int(h_val * native_ratio))
+                self.width_var.set(str(w_val))
+                
+        self._updating_dimensions = False
+        self.sync_gui_to_dataclass()
+        self.apply_fast_preview_transform()
+
+    # --- LOADING ARTIFACT ENGINE ---
     def load_image_action(self):
+        self.lbl_file_name.config(text="⌛ Opening File Browser...")
         file_path = filedialog.askopenfilename(
             filetypes=[("All Images", "*.jpg *.jpeg *.png *.heic *.gif *.tiff"), ("All Files", "*.*")]
         )
-        if not file_path:
-            return
+        if file_path:
+            self.lbl_file_name.config(text="⌛ Loading image file...")
+            threading.Thread(target=self._async_load_worker, args=(file_path,), daemon=True).start()
+        else:
+            self.lbl_file_name.config(text="No file loaded")
+
+    def _async_load_worker(self, file_path):
         try:
-            self.original_pil_img = open_image(file_path)
-            self.current_src_path = Path(file_path)
-            self.lbl_file_name.config(text=self.current_src_path.name)
-            
-            # Store image properties inside tracking object fields
-            self.settings.width = self.original_pil_img.width
-            self.settings.height = self.original_pil_img.height
-            self.settings.ratio = self.original_pil_img.width / self.original_pil_img.height
-            
-            # Pop the Rabbit out of the Hat! Swapping the visual asset
-            if self.img_rabbit_hat:
-                self.hat_visual_label.config(image=self.img_rabbit_hat, text="✨ 🐇 Ta-da! Rabbit Out!")
-                
-            # Unlock structural UI elements to accept user input
-            self.btn_save.config(state="normal")
-            self.btn_revert.config(state="normal")
-            self.btn_close.config(state="normal")
-            
-            # Match initial view states across data containers
-            self.sync_gui_to_dataclass()
+            loaded_img = open_image(file_path)
+            loaded_img.load()  # Read full array out safely into RAM
+            src_path = Path(file_path)
+            self.after(0, self._async_load_callback, loaded_img, src_path)
         except Exception as e:
-            self.lbl_file_name.config(text=f"❌ Error Loading: {str(e)}")
+            self.after(0, lambda: self.lbl_file_name.config(text=f"❌ Error Loading: {str(e)}"))
 
-    def apply_transformations(self):
-        if not self.original_pil_img:
-            return
-        # Process changes through backend engine referencing the live dataclass data directly
-        self.processed_pil_img = rotate_or_flip(self.original_pil_img, self.settings.rotate)
-        self.display_images()
-
-    def display_images(self):
-        """ Dynamically rescales tracking preview targets to match the window container size on maximize """
-        if not self.original_pil_img:
-            return
-        # Resize center image viewport safely bounding dimensions
-        m_w = max(self.lbl_orig_view.winfo_width(), 100)
-        m_h = max(self.lbl_orig_view.winfo_height(), 100)
-        scaled_orig = resize_image(self.original_pil_img, (m_w, m_h))
-        self.tk_orig_reference = ImageTk.PhotoImage(scaled_orig)
-        self.lbl_orig_view.config(image=self.tk_orig_reference, text="")
+    def _async_load_callback(self, loaded_img, src_path):
+        self.original_pil_img = loaded_img
+        self.current_src_path = src_path
+        self.lbl_file_name.config(text=self.current_src_path.name)
         
-        # Resize right preview image viewport safely bounding dimensions
-        r_w = max(self.lbl_prev_view.winfo_width(), 100)
-        r_h = max(self.lbl_prev_view.winfo_height(), 100)
-        scaled_preview = resize_image(self.processed_pil_img, (r_w, r_h))
-        self.tk_preview_reference = ImageTk.PhotoImage(scaled_preview)
-        self.lbl_prev_view.config(image=self.tk_preview_reference, text="")
+        self.width_var.set(str(self.original_pil_img.width))
+        self.height_var.set(str(self.original_pil_img.height))
+        
+        if self.img_rabbit_hat:
+            self.hat_visual_label.config(image=self.img_rabbit_hat, text="✨ 🐇 Ta-da! Rabbit Out!")
+            
+        self.btn_save.config(state="normal")
+        self.btn_revert.config(state="normal")
+        self.btn_close.config(state="normal")
+        
+        # Zero out size memories to force immediate initial cache building
+        self.last_orig_width = 0
+        self.last_orig_height = 0
+        
+        self.generate_viewport_caches()
+
+    # --- DOCKING RECONCILIATION SWITCHBOARD (THE RESIZE BREAKOUT) ---
+    def handle_window_resize_event(self, event):
+        if not self.original_pil_img:
+            return
+            
+        # Check if the panel size change is meaningful (> 4px deviation)
+        # This blocks cascading internal rendering events from locking your app
+        if abs(event.width - self.last_orig_width) < 4 and abs(event.height - self.last_orig_height) < 4:
+            return
+            
+        self.last_orig_width = event.width
+        self.last_orig_height = event.height
+        
+        if self._resize_timer_id:
+            self.after_cancel(self._resize_timer_id)
+        self._resize_timer_id = self.after(300, self.generate_viewport_caches)
+
+    def generate_viewport_caches(self):
+        if not self.original_pil_img:
+            return
+        threading.Thread(target=self._build_cache_worker, daemon=True).start()
+
+    def _build_cache_worker(self):
+        # Read true sizing safely from structural components
+        m_w = max(self.mid_col.winfo_width() - 20, 100)
+        m_h = max(self.mid_col.winfo_height() - 40, 100)
+        r_w = max(self.right_col.winfo_width() - 20, 100)
+        r_h = max(self.right_col.winfo_height() - 40, 100)
+        
+        # Core operations run completely isolated away from your UI thread
+        t1 = resize_image(self.original_pil_img, (m_w, m_h))
+        t2 = resize_image(self.original_pil_img, (r_w, r_h))
+        
+        self.orig_view_thumb = t1.copy()
+        self.preview_view_thumb = t2.copy()
+        
+        self.after(0, self._render_caches_callback)
+
+    def _render_caches_callback(self):
+        if not self.original_pil_img:
+            return
+        self.tk_orig_reference = ImageTk.PhotoImage(self.orig_view_thumb)
+        self.lbl_orig_view.config(image=self.tk_orig_reference, text="")
+        self.sync_gui_to_dataclass()
+        self.apply_fast_preview_transform()
+
+    # --- INSTANT LIGHTWEIGHT RUNTIME TRANSITIONS ---
+    def apply_fast_preview_transform(self):
+            if not self.preview_view_thumb:
+                return
+                
+            current_rotation = self.rotate_var.get()
+            
+            # ELIMINATE THE SLOWDOWN: If rotation is 0, don't calculate or allocate anything new
+            if current_rotation == "0":
+                self.tk_preview_reference = ImageTk.PhotoImage(self.preview_view_thumb)
+                self.lbl_prev_view.config(image=self.tk_preview_reference, text="")
+                return
+
+            # Only process actual transpositions if the value isn't 0
+            processed_preview = rotate_or_flip(self.preview_view_thumb, current_rotation)
+            self.tk_preview_reference = ImageTk.PhotoImage(processed_preview)
+            self.lbl_prev_view.config(image=self.tk_preview_reference, text="")
 
     def revert_settings_action(self):
         if not self.original_pil_img:
             return
-        # Set dropdown interactive widgets and labels back to baseline default parameters
         self.rotate_var.set("0")
         self.quality_var.set(12)
         self.lbl_quality_val.config(text="12")
-        self.format_var.set("TIFF")
-        # Save structural adjustments inside tracking instance context
+        self.format_var.set("JPEG")
+        self.width_var.set(str(self.original_pil_img.width))
+        self.height_var.set(str(self.original_pil_img.height))
         self.sync_gui_to_dataclass()
+        self.apply_fast_preview_transform()
 
     def confirm_close_action(self):
         if not self.original_pil_img:
             return
-        confirm = messagebox.askyesno(
-            "Close Image?",
-            "Are you sure you want to close this image?\nAny unsaved adjustments will be lost."
-        )
-        if confirm:
+        if messagebox.askyesno("Close Image?", "Are you sure you want to close this image?"):
             self.close_image_session()
 
     def close_image_session(self):
-        """ Clears all loaded tracking properties and file pointer references out of application RAM """
         self.current_src_path = None
         self.original_pil_img = None
-        self.processed_pil_img = None
+        self.orig_view_thumb = None
+        self.preview_view_thumb = None
         self.tk_orig_reference = None
         self.tk_preview_reference = None
-        
-        # Re-instantiate an empty baseline dataclass model parameter set
         self.settings = ImageSettings()
         
-        # Wipe visual presentation panels back to base textual messages
         self.lbl_file_name.config(text="No file loaded")
         self.lbl_orig_view.config(image="", text="Awaiting File Input...")
         self.lbl_prev_view.config(image="", text="No modifications yet")
+        self.width_var.set("")
+        self.height_var.set("")
         
-        # Lock administrative execution switches back down
         self.btn_save.config(state="disabled")
         self.btn_revert.config(state="disabled")
         self.btn_close.config(state="disabled")
         
-        # Return the Rabbit back down safely inside the hat structure
         if self.img_empty_hat:
             self.hat_visual_label.config(image=self.img_empty_hat, text="🎩 Hat is Empty...")
 
+    # --- HIGH-QUALITY SAVE COMPILATION WORKER ---
     def save_action(self):
-        if not self.processed_pil_img or not self.current_src_path:
+        if not self.original_pil_img or not self.current_src_path:
             return
             
-        # Locate source location path bounds, instantiate matching magic_hat sub-directory tree safely
         default_dir = self.current_src_path.parent / "magic_hat"
         default_dir.mkdir(exist_ok=True)
         
-        # Build output filename with _copy appended dynamically using tracking file type metadata choices
         target_ext = f".{self.settings.filetype.lower()}"
         default_filename = f"{self.current_src_path.stem}_copy{target_ext}"
         
-        # Present directory output management frame to handle file assignment properties
         out_file_path = filedialog.asksaveasfilename(
             initialdir=default_dir,
             initialfile=default_filename,
@@ -280,28 +392,44 @@ class GUI(tk.Tk):
             return
             
         out_path = Path(out_file_path)
+        pillow_quality = int((self.settings.quality / 12) * 100)
+        self.btn_save.config(state="disabled")
         
-        # Security Overwrite protection logic tracking block against original file modification bounds
-        if out_path.resolve() == self.current_src_path.resolve():
-            messagebox.showerror("Save Aborted", "Overwriting the original source image is forbidden! Please select a unique file name.")
-            return
-            
+        threading.Thread(
+            target=self._async_save_worker, 
+            args=(out_path, pillow_quality), 
+            daemon=True
+        ).start()
+
+    def _async_save_worker(self, out_path, pillow_quality):
         try:
-            # Map quality value scale range properties (1-12) to standard Pillow compression spectrum (1-100)
-            pillow_quality = int((self.settings.quality / 12) * 100)
+            # Process high-quality master transposition on the background thread
+            master_img = rotate_or_flip(self.original_pil_img, self.settings.rotate)
             
-            # Execute physical export operation saving down to localized hard disk storage paths
+            try:
+                target_w = int(self.width_var.get())
+                target_h = int(self.height_var.get())
+                if target_w != self.original_pil_img.width or target_h != self.original_pil_img.height:
+                    master_img = master_img.resize((target_w, target_h), Image.Resampling.LANCZOS)
+            except ValueError:
+                pass
+
             if self.settings.filetype in ["JPEG", "WEBP"]:
-                self.processed_pil_img.save(out_path, format=self.settings.filetype, quality=pillow_quality)
+                master_img.save(out_path, format=self.settings.filetype, quality=pillow_quality)
             else:
-                self.processed_pil_img.save(out_path, format=self.settings.filetype)
+                master_img.save(out_path, format=self.settings.filetype)
                 
-            print(f"File successfully committed using dataclass configurations: {out_path}")
-            
-            # Close down workspace sessions completely on file compilation completion events
-            self.close_image_session()
+            self.after(0, self._async_save_callback, True, out_path, None)
         except Exception as e:
-            messagebox.showerror("Export Failed", f"An error occurred during image compilation:\n{str(e)}")
-            
+            self.after(0, self._async_save_callback, False, out_path, str(e))
+
+    def _async_save_callback(self, success, out_path, error_msg):
+        if success:
+            self.close_image_session()
+        else:
+            self.btn_save.config(state="normal")  
+            messagebox.showerror("Export Failed", f"An error occurred during compilation:\n{error_msg}")
+
+
 if __name__ == "__main__":
     main()
