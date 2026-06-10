@@ -16,6 +16,4 @@ def test_open_image():
     # Test that a Pillow Image instance is returned when we try to open a file
     filepath = 'art/magic_hat_emptyx5.gif'
     assert isinstance(open_image(filepath), Image.Image)
-    
-
 
