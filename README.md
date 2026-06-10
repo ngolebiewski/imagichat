@@ -34,12 +34,20 @@
     - main: GUI and "pieced together" image functions
     - constants: RAW files types, resample filters, etc.
     - image_lib: This should contain the function components that make up the image ops.
+- For the classes to hold things like image settings that can be tweaked by the user, I am using the built-in dataclasses library from Python: https://docs.python.org/3/library/dataclasses.html
+As this class really holds an array of data, it seems like the perfect fit and a way to cut down on boiler-plate code, i.e. (__init__, self.quality = ...
+)
+- Considered this: - **tkinterdnd2**: Drag and drop library for TKINTER - https://pypi.org/project/tkinterdnd2/ 
+but the drag & drop functionality was outside the scope of built in libraries and seemed a bit tenuous. Would be better for a native app or more full featured desktop GUI framework.
 
 ## Libraries
 - **Pillow**: Image processing
-- **Pytest**: Unit testing
 - **Rawpy**: Library that decodes raw image formats
 - **Pillow-Heif**: Lets Pillow reid HEIF (iPhone image) files
+
+
+
+- **Pytest**: Unit testing
 
 ```pip freeze > requirements.txt```
 

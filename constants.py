@@ -1,6 +1,5 @@
 from dataclasses import dataclass
 from PIL import Image
-from enum import Enum
 
 
 """
@@ -17,7 +16,6 @@ Available Filters:
 As List: ['NEAREST', 'BOX', 'BILINEAR', 'HAMMING', 'BICUBIC', 'LANCZOS']
 """
 GUI_RESAMPLE_OPTIONS = [filter.name for filter in Image.Resampling]
-
 
 
 RAW_EXTENSIONS = {
