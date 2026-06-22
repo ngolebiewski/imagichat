@@ -5,6 +5,9 @@
 
 ![rabbit popping out of pixel art hat](art/magic_hat_x5.gif)
 
+![tkinter desktop app screenshot with bicyclist](art/tkinter-screenshot.jpg)
+Tkinter desktop app.
+
 ## A Python/TKINTER GUI desktop app for easy Pillow image manipulations
 1. Resize Images
 2. Convert Image Types
@@ -39,6 +42,7 @@ As this class really holds an array of data, it seems like the perfect fit and a
 )
 - Considered this: - **tkinterdnd2**: Drag and drop library for TKINTER - https://pypi.org/project/tkinterdnd2/ 
 but the drag & drop functionality was outside the scope of built in libraries and seemed a bit tenuous. Would be better for a native app or more full featured desktop GUI framework.
+- Tkinter is JUST TOO SLOW! 
 
 ## Libraries
 - **Pillow**: Image processing
